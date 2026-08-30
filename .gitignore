@@ -1,0 +1,10 @@
+.DS_Store
+.worktrees/
+tmp/
+*.pdf
+__pycache__/
+*.py[cod]
+.gongkao-study/*.sqlite3
+.gongkao-study/*.sqlite3-*
+.gongkao-study/exports/
+
