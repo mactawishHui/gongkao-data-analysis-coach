@@ -103,7 +103,7 @@ from coachlib.formulas import (
 )
 
 def test_growth_amount_from_current_and_rate():
-    assert round(growth_amount(72414, 0.058), 1) == 3970.1
+    assert round(growth_amount(72414, 0.058), 1) == 3969.8
 
 def test_ratio_growth_preserves_small_positive_direction():
     assert ratio_growth(0.089, 0.087) > 0
@@ -388,4 +388,3 @@ git commit -m "feat: add gongkao data analysis coach"
 ```
 
 Expected: 工作树干净，功能提交包含技能、脚本、知识资产、测试和完成审计。
-
