@@ -1,5 +1,7 @@
 # 公考资料分析教练 Implementation Plan
 
+> **实施状态（2026-08-30）**：已完成。下文保留最初的 TDD 步骤与旧命令示例作为历史记录，不能当作当前运行契约；最终契约以技能 `SKILL.md` 和 `docs/superpowers/evidence/2026-08-30-completion-audit.md` 为准。最终实现采用 schema v3 与应用 owner，读取不创建/迁移，保护主库及三个 SQLite sidecar；练习按题面十进制数据和 ROUND_HALF_UP 独立复算，CLI 帮助也保持单 JSON。记录入口使用 `--json-file -`，复习更新要求当前 `review_id`，模板展示预算与人类快算安全性严格分离。
+
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
 **Goal:** 在工作区内交付一个可被 Codex 发现的资料分析专项技能，具备速度优先解题、确定性验算、知识图谱、专项练习、真实错题持久化和可信进度定位。
@@ -77,7 +79,7 @@ python3 /Users/mactawish/.codex/skills/.system/skill-creator/scripts/init_skill.
   --resources scripts,references \
   --interface display_name="公考资料分析教练" \
   --interface short_description="快速解题、错题复习与可信进度定位" \
-  --interface default_prompt="使用 $gongkao-data-analysis-coach 解答或训练这道资料分析题，并记录我的学习进度。"
+  --interface default_prompt="使用 $gongkao-data-analysis-coach 解答或训练这道资料分析题；只有我明确同意时才记录学习进度。"
 ```
 
 Expected: `SKILL.md`、`agents/openai.yaml`、`scripts/` 和 `references/` 均生成。

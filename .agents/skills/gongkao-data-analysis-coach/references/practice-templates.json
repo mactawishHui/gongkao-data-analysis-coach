@@ -1,6 +1,6 @@
 {
   "version": 1,
-  "description": "首批可由公式引擎独立复算的资料分析专项练习模板。粗估误差与选项中点余量均按展示单位计。",
+  "description": "首批可由公式引擎独立复算的资料分析专项练习模板。数值模板从题面可见十进制数据独立重算，正确值和数值选项使用 Decimal ROUND_HALF_UP（通常意义的十进制四舍五入，负半位同样远离 0），不用二进制浮点 round 的半偶规则。生成器与验证器只证明确定性公式真值、唯一正确项，以及展示舍入和声明预算没有越过选项边界。declared_display_error_budget 是声明的展示误差预算；它不是 quick_hint 人类快算法的实测误差界。模板未提供实际 estimate、bias、error_bound_derivation，因此 quick_hint 安全性不宣称已验证。rough_error_bound 仅为兼容旧输出的同值别名。",
   "templates": [
     {
       "knowledge_id": "abrx.base",
@@ -9,7 +9,9 @@
       "formula_id": "base_period",
       "unit": "万",
       "precision": 0,
+      "declared_display_error_budget": 2.0,
       "rough_error_bound": 2.0,
+      "quick_hint_safety_verified": false,
       "option_gap": 12.0,
       "quick_hint": "先把 1+r 看成份数：现期有 1+r 份，基期只有 1 份；选项宽时用截位直除。"
     },
@@ -20,9 +22,11 @@
       "formula_id": "growth_amount",
       "unit": "万",
       "precision": 0,
+      "declared_display_error_budget": 50.0,
       "rough_error_bound": 50.0,
+      "quick_hint_safety_verified": false,
       "option_gap": 400.0,
-      "quick_hint": "用 X=A×r/(1+r)。先算 A×r，再按 1+r 略向下修正，不必完整长除。"
+      "quick_hint": "用 X=B×r/(1+r)，其中 B 是现期量。先算 B×r；r>0 时再按 1+r 向下修正，不必完整长除。"
     },
     {
       "knowledge_id": "growth.interval",
@@ -31,7 +35,9 @@
       "formula_id": "interval_growth_percentage",
       "unit": "%",
       "precision": 2,
+      "declared_display_error_budget": 0.3,
       "rough_error_bound": 0.3,
+      "quick_hint_safety_verified": false,
       "option_gap": 2.0,
       "quick_hint": "两段增速先相加，再补交叉项 r1×r2；交叉项为正时不能漏。"
     },
@@ -42,7 +48,9 @@
       "formula_id": "ratio_growth_percentage",
       "unit": "%",
       "precision": 2,
+      "declared_display_error_budget": 0.2,
       "rough_error_bound": 0.2,
+      "quick_hint_safety_verified": false,
       "option_gap": 1.2,
       "quick_hint": "先用分子增速减分母增速定正负和量级，再除以 1+分母增速作小幅修正。"
     },
@@ -53,7 +61,9 @@
       "formula_id": "current_share_percentage",
       "unit": "%",
       "precision": 0,
+      "declared_display_error_budget": 0.5,
       "rough_error_bound": 0.5,
+      "quick_hint_safety_verified": false,
       "option_gap": 4.0,
       "quick_hint": "比重就是部分÷整体；先约分或看常用分数，再按选项间距决定是否直除。"
     },
@@ -64,7 +74,9 @@
       "formula_id": "base_share_percentage",
       "unit": "%",
       "precision": 0,
+      "declared_display_error_budget": 0.5,
       "rough_error_bound": 0.5,
+      "quick_hint_safety_verified": false,
       "option_gap": 4.0,
       "quick_hint": "先算现期比重，再乘修正因子 (1+整体增速)/(1+部分增速)；先判修正方向。"
     },
@@ -75,8 +87,15 @@
       "formula_id": "share_trend_direction",
       "unit": null,
       "precision": null,
-      "rough_error_bound": 0.0,
+      "declared_display_error_budget": null,
+      "rough_error_bound": null,
+      "quick_hint_safety_verified": false,
       "option_gap": null,
+      "generation_scope": {
+        "generated_correct_values": ["上升", "下降"],
+        "distractor_only_values": ["不变", "无法判断"],
+        "description": "只生成部分与整体增速不相等的明确升降题；不变仍作为干扰项。"
+      },
       "quick_hint": "只比分子与分母增速：部分增速大于整体则比重上升，小于则下降，相等则不变。"
     },
     {
@@ -86,7 +105,9 @@
       "formula_id": "average_single",
       "unit": "单位/份",
       "precision": 0,
+      "declared_display_error_budget": 1.0,
       "rough_error_bound": 1.0,
+      "quick_hint_safety_verified": false,
       "option_gap": 6.0,
       "quick_hint": "平均数=总量÷份数；先用选项反乘份数，往往比长除更快。"
     },
@@ -97,7 +118,9 @@
       "formula_id": "average_annual_increase",
       "unit": "万/年",
       "precision": 0,
+      "declared_display_error_budget": 5.0,
       "rough_error_bound": 5.0,
+      "quick_hint_safety_verified": false,
       "option_gap": 30.0,
       "quick_hint": "年均增长量=(末期-初期)÷间隔年数；先数清间隔，不把年份个数当间隔数。"
     },
@@ -108,7 +131,9 @@
       "formula_id": "contribution_rate_percentage",
       "unit": "%",
       "precision": 0,
+      "declared_display_error_budget": 0.5,
       "rough_error_bound": 0.5,
+      "quick_hint_safety_verified": false,
       "option_gap": 4.0,
       "quick_hint": "贡献率=部分增量÷整体增量；先约掉共同的百、千或万，再用常用分数。"
     }

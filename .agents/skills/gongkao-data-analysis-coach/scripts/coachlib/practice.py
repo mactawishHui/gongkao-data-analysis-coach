@@ -6,6 +6,7 @@ import json
 import hashlib
 import math
 import random
+from decimal import Decimal, ROUND_HALF_UP, localcontext
 from pathlib import Path
 from typing import Any
 
@@ -26,6 +27,17 @@ TEMPLATE_PATH = (
     / "practice-templates.json"
 )
 LETTERS = "ABCD"
+DIFFICULTIES = ("easy", "medium", "hard")
+OPTION_GAP_MULTIPLIERS = {
+    "easy": 1.5,
+    "medium": 1.0,
+    "hard": 0.5,
+}
+RATE_SIGNAL_GAP_MULTIPLIERS = {
+    "easy": 2.0,
+    "medium": 1.0,
+    "hard": 0.5,
+}
 
 DATA_KEYS = {
     "abrx.base": {"current", "rate"},
@@ -40,6 +52,77 @@ DATA_KEYS = {
     "special.contribution": {"part_delta", "whole_delta"},
 }
 
+PROMPT_NUMBER_FORMATS = {
+    "abrx.base": {"current": "g", "rate": ".0%"},
+    "abrx.growth-amount": {"current": "g", "rate": ".0%"},
+    "growth.interval": {"first_rate": ".1%", "second_rate": ".1%"},
+    "growth.ratio": {
+        "numerator_rate": ".1%",
+        "denominator_rate": ".1%",
+    },
+    "share.current": {"part": "g", "whole": "g"},
+    "share.base": {
+        "part": "g",
+        "whole": "g",
+        "part_rate": ".0%",
+        "whole_rate": ".0%",
+    },
+    "share.trend": {"part_rate": ".2%", "whole_rate": ".2%"},
+    "average.single": {"total": "", "count": ""},
+    "average.annual-increase": {"start": "", "end": "", "years": ""},
+    "special.contribution": {"part_delta": "g", "whole_delta": "g"},
+}
+
+QUICK_HINT_REQUIRED_EVIDENCE = (
+    "estimate",
+    "bias",
+    "error_bound_derivation",
+)
+QUICK_HINT_SAFETY_REASON = (
+    "quick_hint safety is not verified because no actual estimate, bias, "
+    "or error_bound_derivation is provided"
+)
+ROUGH_ERROR_BOUND_SEMANTICS = (
+    "legacy alias of declared_display_error_budget; not a measured "
+    "quick_hint error bound"
+)
+OPTION_MARGIN_SEMANTICS = (
+    "legacy alias of option_boundary_margin, the exact formula result's "
+    "distance to the nearest option boundary"
+)
+VERIFICATION_SUMMARY_FIELDS = (
+    "ok",
+    "deterministic_formula_truth_verified",
+    "unique_correct_option_verified",
+    "display_rounding_verified",
+    "declared_budget_margin_verified",
+    "quick_hint_safety_verified",
+    "actual_display_rounding_error",
+    "declared_display_error_budget",
+    "recomputed_option_boundary_margin",
+    "quick_hint_safety_reason",
+)
+
+
+def _validate_difficulty(value: Any) -> str:
+    if not isinstance(value, str) or value not in DIFFICULTIES:
+        raise ValueError(
+            "difficulty must be one of: easy, medium, hard"
+        )
+    return value
+
+
+def _difficulty_policy(kind: str) -> dict[str, Any]:
+    if kind == "qualitative":
+        return {
+            "basis": "rate_signal_gap",
+            "multipliers": dict(RATE_SIGNAL_GAP_MULTIPLIERS),
+        }
+    return {
+        "basis": "option_spacing",
+        "multipliers": dict(OPTION_GAP_MULTIPLIERS),
+    }
+
 
 def _is_finite_number(value: Any) -> bool:
     if isinstance(value, bool) or not isinstance(value, (int, float)):
@@ -48,6 +131,156 @@ def _is_finite_number(value: Any) -> bool:
         return math.isfinite(float(value))
     except (OverflowError, ValueError):
         return False
+
+
+def _prompt_visible_decimal(
+    node_id: str,
+    field: str,
+    value: int | float,
+) -> Decimal:
+    rendered = format(value, PROMPT_NUMBER_FORMATS[node_id][field])
+    if rendered.endswith("%"):
+        return Decimal(rendered[:-1]) / Decimal(100)
+    return Decimal(rendered)
+
+
+def _prompt_visible_data(
+    node_id: str,
+    data: dict[str, Any],
+) -> dict[str, Decimal]:
+    return {
+        field: _prompt_visible_decimal(node_id, field, data[field])
+        for field in DATA_KEYS[node_id]
+    }
+
+
+def _canonicalize_prompt_data(
+    node_id: str,
+    data: dict[str, Any],
+) -> dict[str, int | float]:
+    """Reduce sampled data to exactly the values visible in the prompt."""
+
+    return {
+        field: (
+            int(_prompt_visible_decimal(node_id, field, value))
+            if isinstance(value, int) and not isinstance(value, bool)
+            else float(_prompt_visible_decimal(node_id, field, value))
+        )
+        for field, value in data.items()
+    }
+
+
+def _generation_decimal_result(
+    node_id: str,
+    data: dict[str, Any],
+) -> Decimal:
+    """Compute the numeric answer from exactly what the prompt displays."""
+
+    values = _prompt_visible_data(node_id, data)
+    one = Decimal(1)
+    hundred = Decimal(100)
+    with localcontext() as context:
+        context.prec = 50
+        if node_id == "abrx.base":
+            return values["current"] / (one + values["rate"])
+        if node_id == "abrx.growth-amount":
+            return (
+                values["current"]
+                * values["rate"]
+                / (one + values["rate"])
+            )
+        if node_id == "growth.interval":
+            first = values["first_rate"]
+            second = values["second_rate"]
+            return hundred * (first + second + first * second)
+        if node_id == "growth.ratio":
+            return (
+                hundred
+                * (values["numerator_rate"] - values["denominator_rate"])
+                / (one + values["denominator_rate"])
+            )
+        if node_id == "share.current":
+            return hundred * values["part"] / values["whole"]
+        if node_id == "share.base":
+            return (
+                hundred
+                * values["part"]
+                / values["whole"]
+                * (one + values["whole_rate"])
+                / (one + values["part_rate"])
+            )
+        if node_id == "average.single":
+            return values["total"] / values["count"]
+        if node_id == "average.annual-increase":
+            return (
+                (values["end"] - values["start"])
+                / values["years"]
+            )
+        if node_id == "special.contribution":
+            return hundred * values["part_delta"] / values["whole_delta"]
+    raise ValueError(f"knowledge id is not numeric: {node_id}")
+
+
+def _independent_decimal_result(
+    node_id: str,
+    data: dict[str, Any],
+) -> Decimal:
+    """Independently recalculate a numeric prompt without generator formulas."""
+
+    visible = _prompt_visible_data(node_id, data)
+    one = Decimal("1")
+    hundred = Decimal("100")
+    with localcontext() as context:
+        context.prec = 50
+        if node_id == "abrx.base":
+            result = visible["current"] / (one + visible["rate"])
+        elif node_id == "abrx.growth-amount":
+            base = visible["current"] / (one + visible["rate"])
+            result = visible["current"] - base
+        elif node_id == "growth.interval":
+            result = hundred * (
+                (one + visible["first_rate"])
+                * (one + visible["second_rate"])
+                - one
+            )
+        elif node_id == "growth.ratio":
+            result = hundred * (
+                (one + visible["numerator_rate"])
+                / (one + visible["denominator_rate"])
+                - one
+            )
+        elif node_id == "share.current":
+            result = hundred * visible["part"] / visible["whole"]
+        elif node_id == "share.base":
+            base_part = visible["part"] / (one + visible["part_rate"])
+            base_whole = visible["whole"] / (one + visible["whole_rate"])
+            result = hundred * base_part / base_whole
+        elif node_id == "average.single":
+            result = visible["total"] / visible["count"]
+        elif node_id == "average.annual-increase":
+            result = (
+                visible["end"] - visible["start"]
+            ) / visible["years"]
+        elif node_id == "special.contribution":
+            result = (
+                hundred
+                * visible["part_delta"]
+                / visible["whole_delta"]
+            )
+        else:
+            raise ValueError(f"knowledge id is not numeric: {node_id}")
+    return result
+
+
+def _round_half_up(value: Decimal, precision: int) -> float:
+    quantum = Decimal(1).scaleb(-precision)
+    with localcontext() as context:
+        context.prec = max(50, value.adjusted() + precision + 5)
+        rounded = value.quantize(quantum, rounding=ROUND_HALF_UP)
+    result = float(rounded)
+    if not math.isfinite(result):
+        raise OverflowError("rounded display value is outside the finite range")
+    return result
 
 
 def _validate_data_domain(node_id: str, data: dict[str, Any]) -> list[str]:
@@ -66,6 +299,14 @@ def _validate_data_domain(node_id: str, data: dict[str, Any]) -> list[str]:
     for field in rate_fields:
         if not -1.0 < float(data[field]) <= 10.0:
             errors.append(f"data domain requires -100% < {field} <= 1000%")
+
+    for field, value in data.items():
+        visible_value = _prompt_visible_decimal(node_id, field, value)
+        numeric_value = Decimal(str(value))
+        if numeric_value != visible_value:
+            errors.append(
+                f"data domain requires prompt-visible precision for {field}"
+            )
 
     if node_id in {"abrx.base", "abrx.growth-amount"}:
         if float(data["current"]) <= 0:
@@ -97,6 +338,16 @@ def _validate_data_domain(node_id: str, data: dict[str, Any]) -> list[str]:
     elif node_id == "special.contribution":
         if float(data["whole_delta"]) == 0:
             errors.append("data domain requires whole_delta != 0")
+    elif node_id == "share.trend":
+        if math.isclose(
+            float(data["part_rate"]),
+            float(data["whole_rate"]),
+            rel_tol=0.0,
+            abs_tol=1e-12,
+        ):
+            errors.append(
+                "data domain requires a nonzero rate gap for difficulty control"
+            )
     return errors
 
 
@@ -203,8 +454,8 @@ def _render_prompt(node_id: str, data: dict[str, Any]) -> str:
         )
     if node_id == "share.trend":
         return (
-            f"部分增长 {data['part_rate']:.1%}，总体增长 "
-            f"{data['whole_rate']:.1%}，现期比重较基期如何变化？"
+            f"部分增长 {data['part_rate']:.2%}，总体增长 "
+            f"{data['whole_rate']:.2%}，现期比重较基期如何变化？"
         )
     if node_id == "average.single":
         return (
@@ -235,12 +486,127 @@ def _semantic_id(node_id: str, data: dict[str, Any]) -> str:
     return hashlib.sha256(canonical.encode("utf-8")).hexdigest()[:20]
 
 
+def _verification_scope(kind: str | None) -> dict[str, Any]:
+    verified = [
+        "deterministic_formula_truth",
+        "unique_correct_option",
+        "difficulty_configuration",
+    ]
+    not_applicable: list[str] = []
+    numeric_checks = [
+        "display_rounding",
+        "declared_budget_vs_option_boundary",
+    ]
+    if kind == "qualitative":
+        not_applicable.extend(numeric_checks)
+    else:
+        verified.extend(numeric_checks)
+    return {
+        "verified": verified,
+        "not_verified": ["quick_hint_safety"],
+        "not_applicable": not_applicable,
+        "quick_hint_evidence_required": list(QUICK_HINT_REQUIRED_EVIDENCE),
+    }
+
+
+def practice_catalog() -> list[dict[str, Any]]:
+    """Return the deterministic template catalog without opening study state."""
+
+    return [
+        {
+            "knowledge_id": template["knowledge_id"],
+            "title": template["title"],
+            "kind": template["kind"],
+            "unit": template.get("unit"),
+            "formula_id": template["formula_id"],
+            "supported_difficulties": list(DIFFICULTIES),
+            "difficulty_policy": _difficulty_policy(template["kind"]),
+            "verification_scope": _verification_scope(template["kind"]),
+            "generation_scope": template.get("generation_scope"),
+            "quick_hint_safety_verified": False,
+            "quick_hint_safety_reason": QUICK_HINT_SAFETY_REASON,
+        }
+        for template in _load_templates().values()
+    ]
+
+
+def _verification_result(
+    errors: list[str],
+    scope: dict[str, Any],
+    *,
+    formula_truth_verified: bool = False,
+    unique_correct_option_verified: bool = False,
+    display_rounding_verified: bool | None = False,
+    declared_budget_margin_verified: bool | None = False,
+    actual_display_rounding_error: float | None = None,
+    declared_display_error_budget: float | None = None,
+    recomputed_option_boundary_margin: float | None = None,
+) -> dict[str, Any]:
+    return {
+        "ok": not errors,
+        "errors": errors,
+        "verification_scope": scope,
+        "deterministic_formula_truth_verified": formula_truth_verified,
+        "unique_correct_option_verified": unique_correct_option_verified,
+        "display_rounding_verified": display_rounding_verified,
+        "declared_budget_margin_verified": declared_budget_margin_verified,
+        "quick_hint_safety_verified": False,
+        "quick_hint_safety_reason": QUICK_HINT_SAFETY_REASON,
+        "actual_display_rounding_error": actual_display_rounding_error,
+        "declared_display_error_budget": declared_display_error_budget,
+        "recomputed_option_boundary_margin": recomputed_option_boundary_margin,
+        # Backward-compatible aliases.  Their semantics are deliberately
+        # narrower than quick-hint safety.
+        "margin_safe": declared_budget_margin_verified is True,
+        "margin_safe_semantics": (
+            "legacy alias of declared_budget_margin_verified; it does not "
+            "verify quick_hint safety"
+        ),
+        "recomputed_option_margin": recomputed_option_boundary_margin,
+    }
+
+
+def _verification_summary(verification: dict[str, Any]) -> dict[str, Any]:
+    return {
+        field: verification[field]
+        for field in VERIFICATION_SUMMARY_FIELDS
+    }
+
+
+def _strict_equal(left: Any, right: Any) -> bool:
+    """Compare generated provenance without Python's bool/int aliasing."""
+
+    if type(left) is not type(right):
+        return False
+    if isinstance(left, dict):
+        return set(left) == set(right) and all(
+            _strict_equal(left[key], right[key]) for key in left
+        )
+    if isinstance(left, list):
+        return len(left) == len(right) and all(
+            _strict_equal(left_item, right_item)
+            for left_item, right_item in zip(left, right)
+        )
+    return left == right
+
+
 def verify_question(question: dict[str, Any]) -> dict[str, Any]:
-    """Independently recalculate a generated question and its option safety."""
+    """Independently verify deterministic answer construction.
+
+    This verifier does not execute or measure the human ``quick_hint``.  The
+    fixed template budget is only checked against display rounding and option
+    boundaries, so quick-hint safety remains explicitly unverified.
+    """
 
     errors: list[str] = []
-    margin_safe = False
+    scope = _verification_scope(None)
+    formula_truth_verified = False
+    unique_correct_option_verified = False
+    display_rounding_verified: bool | None = False
+    declared_budget_margin_verified: bool | None = False
+    actual_rounding_error: float | None = None
     recomputed_margin: float | None = None
+    declared_budget: float | None = None
     try:
         knowledge_id = question["knowledge_id"]
         prompt = question["prompt"]
@@ -251,15 +617,30 @@ def verify_question(question: dict[str, Any]) -> dict[str, Any]:
         exact_value = question["exact_value"]
         formula_id = question["formula_id"]
         data = question["data"]
-        rough_error = question["rough_error_bound"]
-        stored_margin = question["option_margin"]
+        declared_budget = question["declared_display_error_budget"]
+        legacy_rough_error = question["rough_error_bound"]
+        stored_margin = question["option_boundary_margin"]
+        legacy_margin = question["option_margin"]
+        quick_hint_safety = question["quick_hint_safety_verified"]
+        stored_scope = question["verification_scope"]
+        rough_semantics = question["rough_error_bound_semantics"]
+        margin_semantics = question["option_margin_semantics"]
+        difficulty = question["difficulty"]
+        difficulty_basis = question["difficulty_basis"]
+        difficulty_multiplier = question["difficulty_multiplier"]
+        effective_option_gap = question["effective_option_gap"]
+        question_seed = question["seed"]
     except (KeyError, TypeError) as error:
-        return {
-            "ok": False,
-            "errors": [f"missing or malformed field: {error}"],
-            "margin_safe": False,
-            "recomputed_option_margin": None,
-        }
+        return _verification_result(
+            [f"missing or malformed field: {error}"],
+            scope,
+        )
+
+    try:
+        normalized_difficulty = _validate_difficulty(difficulty)
+    except ValueError as error:
+        errors.append(str(error))
+        normalized_difficulty = None
 
     try:
         template = _load_templates()[knowledge_id]
@@ -267,25 +648,78 @@ def verify_question(question: dict[str, Any]) -> dict[str, Any]:
         errors.append(f"knowledge template cannot be resolved: {error}")
         template = None
     if template is not None:
-        bindings = {
-            "formula_id": formula_id,
-            "template_title": question.get("template_title"),
-            "quick_hint": question.get("quick_hint"),
-            "unit": question.get("unit"),
-            "precision": question.get("precision"),
-            "rough_error_bound": rough_error,
-        }
+        scope = _verification_scope(template.get("kind"))
+        difficulty_policy = _difficulty_policy(template["kind"])
+        if normalized_difficulty is None:
+            expected_difficulty_multiplier = None
+        else:
+            expected_difficulty_multiplier = difficulty_policy[
+                "multipliers"
+            ][normalized_difficulty]
+        expected_effective_option_gap = (
+            float(template["option_gap"]) * expected_difficulty_multiplier
+            if template["kind"] == "numeric"
+            and expected_difficulty_multiplier is not None
+            else None
+        )
+        expected_declared_budget = template.get(
+            "declared_display_error_budget"
+        )
         expected_bindings = {
             "formula_id": template["formula_id"],
             "template_title": template["title"],
             "quick_hint": template["quick_hint"],
             "unit": template.get("unit"),
             "precision": template.get("precision"),
-            "rough_error_bound": float(template["rough_error_bound"]),
+            "declared_display_error_budget": expected_declared_budget,
+            "rough_error_bound": template.get("rough_error_bound"),
+            "quick_hint_safety_verified": False,
+            "rough_error_bound_semantics": ROUGH_ERROR_BOUND_SEMANTICS,
+            "option_margin_semantics": OPTION_MARGIN_SEMANTICS,
+            "difficulty": normalized_difficulty,
+            "difficulty_basis": difficulty_policy["basis"],
+            "difficulty_multiplier": expected_difficulty_multiplier,
+            "effective_option_gap": expected_effective_option_gap,
+        }
+        bindings = {
+            "formula_id": formula_id,
+            "template_title": question.get("template_title"),
+            "quick_hint": question.get("quick_hint"),
+            "unit": question.get("unit"),
+            "precision": question.get("precision"),
+            "declared_display_error_budget": declared_budget,
+            "rough_error_bound": legacy_rough_error,
+            "quick_hint_safety_verified": quick_hint_safety,
+            "rough_error_bound_semantics": rough_semantics,
+            "option_margin_semantics": margin_semantics,
+            "difficulty": difficulty,
+            "difficulty_basis": difficulty_basis,
+            "difficulty_multiplier": difficulty_multiplier,
+            "effective_option_gap": effective_option_gap,
         }
         for field, value in bindings.items():
             if value != expected_bindings[field]:
                 errors.append(f"{field} does not match knowledge template")
+        if isinstance(question_seed, bool) or not isinstance(question_seed, int):
+            errors.append("seed must be an integer")
+        elif normalized_difficulty is not None:
+            try:
+                expected_question = _build_question(
+                    template,
+                    knowledge_id,
+                    question_seed,
+                    normalized_difficulty,
+                )
+            except (KeyError, TypeError, ValueError, OverflowError) as error:
+                errors.append(
+                    f"seed and difficulty question cannot be reconstructed: {error}"
+                )
+            else:
+                for field, expected_value in expected_question.items():
+                    if not _strict_equal(question.get(field), expected_value):
+                        errors.append(
+                            f"{field} does not match the declared seed and difficulty"
+                        )
         if not isinstance(data, dict) or set(data) != DATA_KEYS.get(
             knowledge_id, set()
         ):
@@ -294,7 +728,7 @@ def verify_question(question: dict[str, Any]) -> dict[str, Any]:
             errors.extend(_validate_data_domain(knowledge_id, data))
             try:
                 expected_prompt = _render_prompt(knowledge_id, data)
-            except (KeyError, TypeError, ValueError) as error:
+            except (KeyError, TypeError, ValueError, OverflowError) as error:
                 errors.append(f"prompt cannot be rendered from data: {error}")
             else:
                 if prompt != expected_prompt:
@@ -307,21 +741,52 @@ def verify_question(question: dict[str, Any]) -> dict[str, Any]:
                 if question.get("semantic_id") != expected_semantic_id:
                     errors.append("semantic_id does not match structured data")
 
+    if stored_scope != scope:
+        claimed_verified = (
+            stored_scope.get("verified", [])
+            if isinstance(stored_scope, dict)
+            else []
+        )
+        if (
+            isinstance(claimed_verified, (list, tuple, set))
+            and "quick_hint_safety" in claimed_verified
+        ):
+            errors.append(
+                "verification_scope cannot claim quick_hint_safety without "
+                "estimate, bias, and error_bound_derivation"
+            )
+        else:
+            errors.append("verification_scope does not match verifier scope")
+    if quick_hint_safety is not False:
+        errors.append(
+            "quick_hint_safety_verified must be false without actual estimate, "
+            "bias, and error_bound_derivation"
+        )
+    stored_verification = question.get("verification")
+    if stored_verification is not None:
+        if not isinstance(stored_verification, dict):
+            errors.append("stored verification summary must be an object")
+        elif stored_verification.get("quick_hint_safety_verified") is not False:
+            errors.append(
+                "stored verification cannot claim quick_hint safety without "
+                "estimate, bias, and error_bound_derivation"
+            )
+
     if not isinstance(options, list) or len(options) != 4:
         errors.append("options must contain exactly four values")
-        return {
-            "ok": False,
-            "errors": errors,
-            "margin_safe": False,
-            "recomputed_option_margin": None,
-        }
+        return _verification_result(
+            errors,
+            scope,
+            declared_display_error_budget=declared_budget,
+        )
     if question.get("option_labels") != LETTERS:
         errors.append("option_labels must be ABCD")
-    if any(
+    options_unique = not any(
         options[left] == options[right]
         for left in range(4)
         for right in range(left + 1, 4)
-    ):
+    )
+    if not options_unique:
         errors.append("options must be unique")
     if (
         isinstance(correct_index, bool)
@@ -329,75 +794,155 @@ def verify_question(question: dict[str, Any]) -> dict[str, Any]:
         or not 0 <= correct_index < 4
     ):
         errors.append("correct_index must be from 0 to 3")
-        return {
-            "ok": False,
-            "errors": errors,
-            "margin_safe": False,
-            "recomputed_option_margin": None,
-        }
+        return _verification_result(
+            errors,
+            scope,
+            declared_display_error_budget=declared_budget,
+        )
+    correct_binding = True
     if correct_label != LETTERS[correct_index]:
         errors.append("correct_label does not match correct_index")
+        correct_binding = False
     if options[correct_index] != correct_value:
         errors.append("correct_value does not match the indexed option")
+        correct_binding = False
     if options.count(correct_value) != 1:
         errors.append("correct_value must occur exactly once in options")
+        correct_binding = False
 
+    decimal_recomputed: Decimal | None = None
     try:
-        recomputed = _recompute(formula_id, data)
+        if template is not None and template.get("kind") == "numeric":
+            decimal_recomputed = _independent_decimal_result(
+                knowledge_id,
+                data,
+            )
+            recomputed: float | str | None = float(decimal_recomputed)
+        else:
+            recomputed = _recompute(formula_id, data)
     except (ArithmeticError, KeyError, TypeError, ValueError) as error:
         errors.append(f"formula recalculation failed: {error}")
         recomputed = None
 
     if isinstance(recomputed, str):
+        display_rounding_verified = None
+        declared_budget_margin_verified = None
+        valid_qualitative_options = all(
+            isinstance(value, str) for value in options
+        ) and set(options) == {"上升", "下降", "不变", "无法判断"}
         if not all(isinstance(value, str) for value in options):
             errors.append("qualitative options must all be strings")
-        elif set(options) != {"上升", "下降", "不变", "无法判断"}:
+        elif not valid_qualitative_options:
             errors.append("qualitative options do not match the template")
-        if exact_value != recomputed:
+        formula_truth_verified = exact_value == recomputed
+        if not formula_truth_verified:
             errors.append("exact_value does not match formula recalculation")
         if correct_value != recomputed:
             errors.append("correct_value does not match qualitative result")
-        if stored_margin is not None:
-            errors.append("qualitative option_margin must be null")
-        if rough_error != 0.0:
-            errors.append("qualitative rough_error_bound must be zero")
-        margin_safe = not any("option" in error for error in errors)
+        unique_correct_option_verified = (
+            valid_qualitative_options
+            and options_unique
+            and correct_binding
+            and correct_value == recomputed
+        )
+        if stored_margin is not None or legacy_margin is not None:
+            errors.append("qualitative option boundary margins must be null")
+        if declared_budget is not None:
+            errors.append("qualitative declared display budget must be null")
+        if legacy_rough_error is not None:
+            errors.append("qualitative rough_error_bound alias must be null")
     elif _is_finite_number(recomputed):
-        if (
-            not _is_finite_number(exact_value)
-            or not math.isclose(
-                float(exact_value),
-                float(recomputed),
-                rel_tol=1e-9,
-                abs_tol=1e-8,
-            )
-        ):
+        formula_truth_verified = (
+            _is_finite_number(exact_value)
+            and float(exact_value) == float(recomputed)
+        )
+        if not formula_truth_verified:
             errors.append("exact_value does not match formula recalculation")
-        if template is not None and template["kind"] == "numeric":
-            expected_display = round(float(recomputed), int(template["precision"]))
-            if correct_value != expected_display:
-                errors.append("correct_value does not use template precision")
+
+        expected_display: float | None = None
+        if (
+            template is not None
+            and template.get("kind") == "numeric"
+            and decimal_recomputed is not None
+        ):
+            try:
+                expected_display = _round_half_up(
+                    decimal_recomputed,
+                    int(template["precision"]),
+                )
+            except (ArithmeticError, OverflowError, TypeError, ValueError) as error:
+                errors.append(f"display rounding failed: {error}")
+                display_rounding_verified = False
+            else:
+                actual_rounding_error = float(
+                    abs(decimal_recomputed - Decimal(str(expected_display)))
+                )
+                display_rounding_verified = correct_value == expected_display
+                if not display_rounding_verified:
+                    errors.append("correct_value does not use template precision")
+
         if any(not _is_finite_number(value) for value in options):
             errors.append("numeric options must all be finite numbers")
         else:
-            distances = [abs(float(value) - float(recomputed)) for value in options]
+            numeric_options = [float(value) for value in options]
+            if (
+                template is not None
+                and template.get("kind") == "numeric"
+                and normalized_difficulty is not None
+            ):
+                expected_gap = (
+                    float(template["option_gap"])
+                    * OPTION_GAP_MULTIPLIERS[normalized_difficulty]
+                )
+                ordered_options = sorted(numeric_options)
+                observed_gaps = [
+                    ordered_options[index + 1] - ordered_options[index]
+                    for index in range(3)
+                ]
+                if any(
+                    not math.isclose(
+                        observed_gap,
+                        expected_gap,
+                        rel_tol=1e-12,
+                        abs_tol=1e-12,
+                    )
+                    for observed_gap in observed_gaps
+                ):
+                    errors.append(
+                        "numeric option spacing does not match difficulty"
+                    )
+            distances = [
+                abs(value - float(recomputed)) for value in numeric_options
+            ]
             minimum = min(distances)
             nearest = [
                 index
                 for index, distance in enumerate(distances)
-                if math.isclose(distance, minimum, rel_tol=1e-12, abs_tol=1e-12)
+                if math.isclose(
+                    distance,
+                    minimum,
+                    rel_tol=1e-12,
+                    abs_tol=1e-12,
+                )
             ]
-            if nearest != [correct_index]:
-                errors.append("formula result does not select one unique correct option")
+            unique_correct_option_verified = (
+                nearest == [correct_index]
+                and options_unique
+                and correct_binding
+            )
+            if not unique_correct_option_verified:
+                errors.append(
+                    "formula result does not select one unique correct option"
+                )
             else:
                 try:
                     recomputed_margin = _numeric_margin(
                         float(recomputed),
-                        [float(value) for value in options],
+                        numeric_options,
                         correct_index,
                     )
                 except (ArithmeticError, TypeError, ValueError) as error:
-                    errors.append(f"option margin cannot be computed: {error}")
+                    errors.append(f"option boundary margin cannot be computed: {error}")
                 else:
                     if (
                         not _is_finite_number(stored_margin)
@@ -409,33 +954,90 @@ def verify_question(question: dict[str, Any]) -> dict[str, Any]:
                         )
                     ):
                         errors.append(
-                            "option_margin does not match recomputed boundary"
+                            "option_boundary_margin does not match recomputed boundary"
                         )
-                    if (
-                        not _is_finite_number(rough_error)
-                        or float(rough_error) < 0
-                    ):
+                    if legacy_margin != stored_margin:
                         errors.append(
-                            "rough_error_bound must be a finite non-negative number"
+                            "option_margin legacy alias does not match "
+                            "option_boundary_margin"
                         )
-                    else:
-                        margin_safe = recomputed_margin > float(rough_error)
-                        if not margin_safe:
-                            errors.append(
-                                "rough_error_bound reaches or crosses an option boundary"
-                            )
+
+        budget_valid = (
+            _is_finite_number(declared_budget)
+            and float(declared_budget) >= 0.0
+        )
+        if not budget_valid:
+            errors.append(
+                "declared_display_error_budget must be a finite "
+                "non-negative number"
+            )
+        elif legacy_rough_error != declared_budget:
+            errors.append(
+                "rough_error_bound legacy alias does not match "
+                "declared_display_error_budget"
+            )
+        if budget_valid and actual_rounding_error is not None:
+            rounding_within_budget = (
+                actual_rounding_error <= float(declared_budget)
+            )
+            if not rounding_within_budget:
+                errors.append(
+                    "display rounding error exceeds declared display budget"
+                )
+            if recomputed_margin is not None:
+                budget_within_boundary = (
+                    float(declared_budget) < recomputed_margin
+                )
+                declared_budget_margin_verified = (
+                    display_rounding_verified is True
+                    and rounding_within_budget
+                    and budget_within_boundary
+                )
+                if not budget_within_boundary:
+                    errors.append(
+                        "declared display budget reaches or crosses an "
+                        "option boundary"
+                    )
     else:
         errors.append("formula did not return a finite result")
 
-    return {
-        "ok": not errors,
-        "errors": errors,
-        "margin_safe": margin_safe,
-        "recomputed_option_margin": recomputed_margin,
-    }
+    preliminary = _verification_result(
+        errors,
+        scope,
+        formula_truth_verified=formula_truth_verified,
+        unique_correct_option_verified=unique_correct_option_verified,
+        display_rounding_verified=display_rounding_verified,
+        declared_budget_margin_verified=declared_budget_margin_verified,
+        actual_display_rounding_error=actual_rounding_error,
+        declared_display_error_budget=declared_budget,
+        recomputed_option_boundary_margin=recomputed_margin,
+    )
+    if isinstance(stored_verification, dict):
+        expected_summary = _verification_summary(preliminary)
+        for field, expected in expected_summary.items():
+            if stored_verification.get(field) != expected:
+                errors.append(
+                    f"stored verification {field} does not match independent "
+                    "recalculation"
+                )
+    return _verification_result(
+        errors,
+        scope,
+        formula_truth_verified=formula_truth_verified,
+        unique_correct_option_verified=unique_correct_option_verified,
+        display_rounding_verified=display_rounding_verified,
+        declared_budget_margin_verified=declared_budget_margin_verified,
+        actual_display_rounding_error=actual_rounding_error,
+        declared_display_error_budget=declared_budget,
+        recomputed_option_boundary_margin=recomputed_margin,
+    )
 
 
-def _sample_data(node_id: str, rng: random.Random) -> tuple[dict[str, Any], str]:
+def _sample_data(
+    node_id: str,
+    rng: random.Random,
+    difficulty: str,
+) -> tuple[dict[str, Any], str]:
     if node_id == "abrx.base":
         base = rng.randrange(50, 501) * 10
         rate = rng.choice((0.05, 0.08, 0.10, 0.12, 0.15, 0.20, 0.25))
@@ -454,7 +1056,8 @@ def _sample_data(node_id: str, rng: random.Random) -> tuple[dict[str, Any], str]
         first = rng.randrange(-100, 201) / 1000.0
         second = rng.randrange(-80, 181) / 1000.0
         return {"first_rate": first, "second_rate": second}, (
-            f"某指标连续两年增速分别为 {first:.0%}、{second:.0%}，两年累计增速约为多少？"
+            f"某指标连续两年增速分别为 {first:.1%}、{second:.1%}，"
+            "两年累计增速约为多少？"
         )
     if node_id == "growth.ratio":
         numerator = rng.randrange(-80, 221) / 1000.0
@@ -463,7 +1066,8 @@ def _sample_data(node_id: str, rng: random.Random) -> tuple[dict[str, Any], str]
             "numerator_rate": numerator,
             "denominator_rate": denominator,
         }, (
-            f"某比值的分子增长 {numerator:.0%}、分母增长 {denominator:.0%}，该比值增速约为多少？"
+            f"某比值的分子增长 {numerator:.1%}、分母增长 "
+            f"{denominator:.1%}，该比值增速约为多少？"
         )
     if node_id == "share.current":
         whole = rng.randrange(20, 201) * 100
@@ -490,10 +1094,17 @@ def _sample_data(node_id: str, rng: random.Random) -> tuple[dict[str, Any], str]
         )
     if node_id == "share.trend":
         whole_rate = rng.randrange(-80, 181) / 1000.0
-        relation = rng.choice((-1, 0, 1))
-        part_rate = whole_rate + relation * rng.randrange(10, 81) / 1000.0
+        relation = rng.choice((-1, 1))
+        base_signal_gap = rng.randrange(10, 81) / 1000.0
+        part_rate = (
+            whole_rate
+            + relation
+            * base_signal_gap
+            * RATE_SIGNAL_GAP_MULTIPLIERS[difficulty]
+        )
         return {"part_rate": part_rate, "whole_rate": whole_rate}, (
-            f"部分增长 {part_rate:.0%}，总体增长 {whole_rate:.0%}，现期比重较基期如何变化？"
+            f"部分增长 {part_rate:.2%}，总体增长 {whole_rate:.2%}，"
+            "现期比重较基期如何变化？"
         )
     if node_id == "average.single":
         count = rng.randrange(4, 41)
@@ -524,23 +1135,40 @@ def _build_question(
     template: dict[str, Any],
     node_id: str,
     question_seed: int,
+    difficulty: str,
 ) -> dict[str, Any]:
+    normalized_difficulty = _validate_difficulty(difficulty)
     rng = random.Random(question_seed)
-    data, _ = _sample_data(node_id, rng)
+    data, _ = _sample_data(node_id, rng, normalized_difficulty)
+    data = _canonicalize_prompt_data(node_id, data)
     prompt = _render_prompt(node_id, data)
-    exact = _recompute(template["formula_id"], data)
+    difficulty_policy = _difficulty_policy(template["kind"])
+    difficulty_multiplier = difficulty_policy["multipliers"][
+        normalized_difficulty
+    ]
+    effective_option_gap: float | None = None
     if template["kind"] == "qualitative":
+        exact: float | str = _recompute(template["formula_id"], data)
         options: list[Any] = ["上升", "下降", "不变", "无法判断"]
         rng.shuffle(options)
         correct_value = exact
         margin = None
     else:
         precision = int(template["precision"])
-        correct_value = round(float(exact), precision)
-        gap = float(template["option_gap"])
+        decimal_exact = _generation_decimal_result(node_id, data)
+        exact = float(decimal_exact)
+        correct_value = _round_half_up(decimal_exact, precision)
+        effective_option_gap = (
+            float(template["option_gap"]) * difficulty_multiplier
+        )
+        decimal_gap = Decimal(str(effective_option_gap))
         numeric_rank = rng.randrange(4)
         options = [
-            round(correct_value + (rank - numeric_rank) * gap, precision)
+            _round_half_up(
+                Decimal(str(correct_value))
+                + Decimal(rank - numeric_rank) * decimal_gap,
+                precision,
+            )
             for rank in range(4)
         ]
         if len(set(options)) != 4:
@@ -549,6 +1177,7 @@ def _build_question(
         correct_index = options.index(correct_value)
         margin = _numeric_margin(float(exact), options, correct_index)
     correct_index = options.index(correct_value)
+    declared_budget = template.get("declared_display_error_budget")
     question = {
         "knowledge_id": node_id,
         "semantic_id": _semantic_id(node_id, data),
@@ -566,7 +1195,18 @@ def _build_question(
         "seed": question_seed,
         "unit": template.get("unit"),
         "precision": template.get("precision"),
-        "rough_error_bound": float(template["rough_error_bound"]),
+        "declared_display_error_budget": declared_budget,
+        "option_boundary_margin": margin,
+        "quick_hint_safety_verified": False,
+        "verification_scope": _verification_scope(template.get("kind")),
+        "difficulty": normalized_difficulty,
+        "difficulty_basis": difficulty_policy["basis"],
+        "difficulty_multiplier": difficulty_multiplier,
+        "effective_option_gap": effective_option_gap,
+        "rough_error_bound_semantics": ROUGH_ERROR_BOUND_SEMANTICS,
+        "option_margin_semantics": OPTION_MARGIN_SEMANTICS,
+        # Compatibility aliases; neither one measures quick_hint error.
+        "rough_error_bound": template.get("rough_error_bound"),
         "option_margin": margin,
     }
     return question
@@ -576,6 +1216,7 @@ def generate_set(
     knowledge_id: str,
     count: int = 5,
     seed: int = 0,
+    difficulty: str = "medium",
 ) -> list[dict[str, Any]]:
     """Generate a deterministic set, resampling until every item verifies."""
 
@@ -586,6 +1227,7 @@ def generate_set(
         raise ValueError("count must be an integer from 1 to 100")
     if isinstance(seed, bool) or not isinstance(seed, int):
         raise ValueError("seed must be an integer")
+    normalized_difficulty = _validate_difficulty(difficulty)
 
     master = random.Random(f"gongkao-practice-v1:{knowledge_id}:{seed}")
     questions: list[dict[str, Any]] = []
@@ -595,7 +1237,10 @@ def generate_set(
             question_seed = master.getrandbits(63)
             try:
                 question = _build_question(
-                    templates[knowledge_id], knowledge_id, question_seed
+                    templates[knowledge_id],
+                    knowledge_id,
+                    question_seed,
+                    normalized_difficulty,
                 )
             except (ArithmeticError, TypeError, ValueError):
                 continue
@@ -603,11 +1248,13 @@ def generate_set(
                 continue
             verification = verify_question(question)
             if verification["ok"]:
+                question["verification"] = _verification_summary(verification)
                 questions.append(question)
                 seen_semantic_ids.add(question["semantic_id"])
                 break
         else:
             raise RuntimeError(
-                f"could not generate a safe question for {knowledge_id}"
+                "could not generate a deterministically verified question "
+                f"for {knowledge_id}"
             )
     return questions

@@ -52,6 +52,12 @@ class FormulaTests(unittest.TestCase):
     def test_product_growth_keeps_cross_term(self) -> None:
         self.assertAlmostEqual(product_growth(0.10, -0.20), -0.12)
 
+    def test_complete_decline_is_valid_when_the_formula_remains_defined(self) -> None:
+        self.assertEqual(interval_growth(0.10, -1.0), -1.0)
+        self.assertEqual(ratio_growth(-1.0, 0.10), -1.0)
+        self.assertEqual(product_growth(-1.0, 0.10), -1.0)
+        self.assertEqual(product_growth(0.10, -1.0), -1.0)
+
     def test_share_formulas(self) -> None:
         self.assertAlmostEqual(current_share(30.0, 120.0), 0.25)
         self.assertAlmostEqual(
@@ -65,6 +71,10 @@ class FormulaTests(unittest.TestCase):
 
     def test_contribution_rate(self) -> None:
         self.assertAlmostEqual(contribution_rate(30.0, 120.0), 0.25)
+        self.assertLess(
+            contribution_rate(-3.0, -10.0),
+            contribution_rate(-7.0, -10.0),
+        )
 
     def test_zero_denominators_raise_clear_value_error(self) -> None:
         cases = (
@@ -104,18 +114,18 @@ class FormulaTests(unittest.TestCase):
             lambda: base_period(10.0, -1.01),
             lambda: growth_amount(10.0, -2.0),
             lambda: interval_growth(-1.0, 0.1),
-            lambda: interval_growth(0.1, -1.0),
-            lambda: ratio_growth(-1.0, 0.1),
             lambda: ratio_growth(0.1, -1.0),
-            lambda: product_growth(-1.0, 0.1),
-            lambda: product_growth(0.1, -1.0),
+            lambda: interval_growth(0.1, -1.01),
+            lambda: ratio_growth(-1.01, 0.1),
+            lambda: product_growth(-1.01, 0.1),
+            lambda: product_growth(0.1, -1.01),
             lambda: base_share(1.0, 2.0, 0.1, -1.0),
             lambda: share_change(1.0, 2.0, 0.1, -1.0),
         )
 
         for operation in cases:
             with self.subTest(operation=operation):
-                with self.assertRaisesRegex(ValueError, "greater than -1"):
+                with self.assertRaisesRegex(ValueError, "greater than -1|at least -1"):
                     operation()
 
     def test_non_finite_inputs_are_rejected(self) -> None:
@@ -123,6 +133,44 @@ class FormulaTests(unittest.TestCase):
             base_period(math.inf, 0.1)
         with self.assertRaisesRegex(ValueError, "finite"):
             current_share(1.0, math.nan)
+
+    def test_ratio_first_order_avoids_recoverable_overflow(self) -> None:
+        amount = growth_amount(1e308, 10.0)
+        base_ratio = base_share(1e308, 1.0, 100.0, 10.0)
+        share_delta = share_change(1e308, 1.0, 100.0, 10.0)
+
+        self.assertTrue(math.isfinite(amount))
+        self.assertTrue(math.isfinite(base_ratio))
+        self.assertTrue(math.isfinite(share_delta))
+        self.assertAlmostEqual(amount / 1e307, 100.0 / 11.0)
+        self.assertAlmostEqual(base_ratio / 1e307, 110.0 / 101.0)
+        self.assertAlmostEqual(share_delta / 1e307, 900.0 / 101.0)
+
+    def test_share_formulas_avoid_recoverable_three_factor_overflow(self) -> None:
+        part_rate = -0.9999999999999999
+        base_ratio = base_share(1.0, 1e308, part_rate, 1e308)
+        share_delta = share_change(1.0, 1e308, part_rate, 1e308)
+
+        expected_scale = 1.0 / (1.0 + part_rate)
+        self.assertTrue(math.isfinite(base_ratio))
+        self.assertTrue(math.isfinite(share_delta))
+        self.assertAlmostEqual(base_ratio / expected_scale, 1.0, places=14)
+        self.assertAlmostEqual(share_delta / expected_scale, -1.0, places=14)
+
+    def test_combined_growth_avoids_catastrophic_cancellation(self) -> None:
+        almost_minus_one = math.nextafter(-1.0, math.inf)
+        expected = 1.1102230246251566e292
+
+        for operation in (interval_growth, product_growth):
+            with self.subTest(operation=operation.__name__):
+                result = operation(almost_minus_one, 1e308)
+                self.assertAlmostEqual(result / expected, 1.0, places=14)
+
+    def test_combined_growth_preserves_subnormal_and_tiny_rates(self) -> None:
+        for tiny in (1e-80, math.ulp(0.0)):
+            for operation in (interval_growth, product_growth):
+                with self.subTest(tiny=tiny, operation=operation.__name__):
+                    self.assertEqual(operation(tiny, 0.0), tiny)
 
 
 class EstimateSafetyTests(unittest.TestCase):
@@ -163,6 +211,36 @@ class EstimateSafetyTests(unittest.TestCase):
         self.assertEqual(underestimate["plausible_exact_interval"], [3955.0, 3965.0])
         self.assertTrue(underestimate["safe"])
 
+    def test_one_sided_margin_uses_only_the_reachable_boundary(self) -> None:
+        result = assess_estimate_safety(
+            estimate=96.0,
+            absolute_error_bound=10.0,
+            options=[90.0, 100.0, 120.0],
+            bias="low",
+        )
+
+        self.assertTrue(result["safe"])
+        self.assertEqual(result["chosen_label"], "B")
+        self.assertEqual(result["nearest_competitor_label"], "C")
+        self.assertEqual(result["decision_boundary"], 110.0)
+        self.assertEqual(result["decision_margin"], 14.0)
+        self.assertEqual(result["residual_margin"], 4.0)
+
+    def test_one_sided_error_moving_away_from_all_options_is_unbounded_safe(self) -> None:
+        result = assess_estimate_safety(
+            estimate=121.0,
+            absolute_error_bound=1000.0,
+            options=[90.0, 100.0, 120.0],
+            bias="low",
+        )
+
+        self.assertTrue(result["safe"])
+        self.assertEqual(result["chosen_label"], "C")
+        self.assertIsNone(result["nearest_competitor_label"])
+        self.assertIsNone(result["decision_boundary"])
+        self.assertIsNone(result["decision_margin"])
+        self.assertIsNone(result["residual_margin"])
+
     def test_dense_options_are_declared_unsafe(self) -> None:
         result = assess_estimate_safety(
             estimate=100.0,
@@ -184,6 +262,63 @@ class EstimateSafetyTests(unittest.TestCase):
 
         self.assertEqual(result["plausible_exact_interval"], [95.0, 100.0])
         self.assertEqual(result["decision_boundary"], 95.0)
+        self.assertEqual(result["residual_margin"], 0.0)
+        self.assertFalse(result["safe"])
+        self.assertIn("跨越", result["failure_reason"])
+
+    def test_decimal_roundoff_at_option_midpoint_is_conservatively_unsafe(self) -> None:
+        result = assess_estimate_safety(
+            estimate=0.21,
+            absolute_error_bound=0.09,
+            options=[0.2, 0.4],
+            bias="low",
+        )
+
+        self.assertAlmostEqual(result["decision_boundary"], 0.3)
+        self.assertEqual(result["residual_margin"], 0.0)
+
+    def test_large_finite_option_midpoint_does_not_overflow(self) -> None:
+        result = assess_estimate_safety(
+            estimate=1e308,
+            absolute_error_bound=2e307,
+            options=[1e308, 1.7e308],
+            bias="low",
+        )
+
+        self.assertTrue(result["safe"], result)
+        self.assertTrue(math.isfinite(result["decision_boundary"]))
+        self.assertAlmostEqual(result["decision_boundary"] / 1e308, 1.35)
+        self.assertGreater(result["residual_margin"], 0.0)
+
+    def test_tie_detection_uses_the_actual_float_values(self) -> None:
+        close = assess_estimate_safety(0.0, 0.0, [0.0, 1e-13])
+        large = assess_estimate_safety(
+            1e12 + 0.1,
+            0.0,
+            [0.0, 2e12],
+        )
+
+        self.assertEqual(close["chosen_index"], 0)
+        self.assertEqual(large["chosen_index"], 1)
+
+    def test_nonfinite_derived_error_interval_is_rejected_explicitly(self) -> None:
+        with self.assertRaisesRegex(OverflowError, "plausible exact interval"):
+            assess_estimate_safety(
+                1e308,
+                1e308,
+                [0.0, 1e308],
+                bias="low",
+            )
+
+    def test_cancellation_roundoff_at_negative_midpoint_is_unsafe(self) -> None:
+        result = assess_estimate_safety(
+            estimate=-0.60445,
+            absolute_error_bound=0.54945,
+            options=[-0.61, 0.5],
+            bias="low",
+        )
+
+        self.assertAlmostEqual(result["decision_boundary"], -0.055)
         self.assertEqual(result["residual_margin"], 0.0)
         self.assertFalse(result["safe"])
         self.assertIn("跨越", result["failure_reason"])
