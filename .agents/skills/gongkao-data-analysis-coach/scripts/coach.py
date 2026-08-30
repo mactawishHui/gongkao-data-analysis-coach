@@ -143,8 +143,24 @@ def _reject_nonstandard_constant(value: str) -> None:
 
 
 def _dispatch(arguments: argparse.Namespace) -> dict[str, Any]:
-    store = StudyStore(arguments.db, _knowledge_weights())
     command = arguments.command
+    if command == "generate":
+        try:
+            from coachlib.practice import generate_set
+        except ImportError as error:
+            raise RuntimeError("practice generator is not implemented yet") from error
+        questions = generate_set(
+            arguments.knowledge_id,
+            arguments.count,
+            arguments.seed,
+        )
+        return _response(
+            arguments.db,
+            f"practice:{arguments.seed}",
+            questions=questions,
+        )
+
+    store = StudyStore(arguments.db, _knowledge_weights())
     if command == "init":
         initialized = store.initialization_receipt
         return _response(arguments.db, "schema-v2", **_without_envelope(initialized))
@@ -193,13 +209,6 @@ def _dispatch(arguments: argparse.Namespace) -> dict[str, Any]:
             exported["output"],
             **_without_envelope(exported),
         )
-    if command == "generate":
-        try:
-            from coachlib.practice import generate_set
-        except ImportError as error:
-            raise RuntimeError("practice generator is not implemented yet") from error
-        questions = generate_set(arguments.knowledge_id, arguments.count, arguments.seed)
-        return _response(arguments.db, f"practice:{arguments.seed}", questions=questions)
     raise ValueError(f"unknown command: {command}")
 
 

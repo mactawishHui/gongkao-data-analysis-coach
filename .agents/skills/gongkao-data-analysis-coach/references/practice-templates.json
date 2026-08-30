@@ -1,0 +1,116 @@
+{
+  "version": 1,
+  "description": "首批可由公式引擎独立复算的资料分析专项练习模板。粗估误差与选项中点余量均按展示单位计。",
+  "templates": [
+    {
+      "knowledge_id": "abrx.base",
+      "title": "已知现期量和增长率求基期量",
+      "kind": "numeric",
+      "formula_id": "base_period",
+      "unit": "万",
+      "precision": 0,
+      "rough_error_bound": 2.0,
+      "option_gap": 12.0,
+      "quick_hint": "先把 1+r 看成份数：现期有 1+r 份，基期只有 1 份；选项宽时用截位直除。"
+    },
+    {
+      "knowledge_id": "abrx.growth-amount",
+      "title": "已知现期量和增长率求增长量",
+      "kind": "numeric",
+      "formula_id": "growth_amount",
+      "unit": "万",
+      "precision": 0,
+      "rough_error_bound": 50.0,
+      "option_gap": 400.0,
+      "quick_hint": "用 X=A×r/(1+r)。先算 A×r，再按 1+r 略向下修正，不必完整长除。"
+    },
+    {
+      "knowledge_id": "growth.interval",
+      "title": "间隔增长率",
+      "kind": "numeric",
+      "formula_id": "interval_growth_percentage",
+      "unit": "%",
+      "precision": 2,
+      "rough_error_bound": 0.3,
+      "option_gap": 2.0,
+      "quick_hint": "两段增速先相加，再补交叉项 r1×r2；交叉项为正时不能漏。"
+    },
+    {
+      "knowledge_id": "growth.ratio",
+      "title": "比值增长率",
+      "kind": "numeric",
+      "formula_id": "ratio_growth_percentage",
+      "unit": "%",
+      "precision": 2,
+      "rough_error_bound": 0.2,
+      "option_gap": 1.2,
+      "quick_hint": "先用分子增速减分母增速定正负和量级，再除以 1+分母增速作小幅修正。"
+    },
+    {
+      "knowledge_id": "share.current",
+      "title": "现期比重",
+      "kind": "numeric",
+      "formula_id": "current_share_percentage",
+      "unit": "%",
+      "precision": 0,
+      "rough_error_bound": 0.5,
+      "option_gap": 4.0,
+      "quick_hint": "比重就是部分÷整体；先约分或看常用分数，再按选项间距决定是否直除。"
+    },
+    {
+      "knowledge_id": "share.base",
+      "title": "基期比重",
+      "kind": "numeric",
+      "formula_id": "base_share_percentage",
+      "unit": "%",
+      "precision": 0,
+      "rough_error_bound": 0.5,
+      "option_gap": 4.0,
+      "quick_hint": "先算现期比重，再乘修正因子 (1+整体增速)/(1+部分增速)；先判修正方向。"
+    },
+    {
+      "knowledge_id": "share.trend",
+      "title": "比重升降定性",
+      "kind": "qualitative",
+      "formula_id": "share_trend_direction",
+      "unit": null,
+      "precision": null,
+      "rough_error_bound": 0.0,
+      "option_gap": null,
+      "quick_hint": "只比分子与分母增速：部分增速大于整体则比重上升，小于则下降，相等则不变。"
+    },
+    {
+      "knowledge_id": "average.single",
+      "title": "现期平均数",
+      "kind": "numeric",
+      "formula_id": "average_single",
+      "unit": "单位/份",
+      "precision": 0,
+      "rough_error_bound": 1.0,
+      "option_gap": 6.0,
+      "quick_hint": "平均数=总量÷份数；先用选项反乘份数，往往比长除更快。"
+    },
+    {
+      "knowledge_id": "average.annual-increase",
+      "title": "年均增长量",
+      "kind": "numeric",
+      "formula_id": "average_annual_increase",
+      "unit": "万/年",
+      "precision": 0,
+      "rough_error_bound": 5.0,
+      "option_gap": 30.0,
+      "quick_hint": "年均增长量=(末期-初期)÷间隔年数；先数清间隔，不把年份个数当间隔数。"
+    },
+    {
+      "knowledge_id": "special.contribution",
+      "title": "增量贡献率",
+      "kind": "numeric",
+      "formula_id": "contribution_rate_percentage",
+      "unit": "%",
+      "precision": 0,
+      "rough_error_bound": 0.5,
+      "option_gap": 4.0,
+      "quick_hint": "贡献率=部分增量÷整体增量；先约掉共同的百、千或万，再用常用分数。"
+    }
+  ]
+}
