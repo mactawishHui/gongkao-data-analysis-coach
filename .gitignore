@@ -1,8 +1,15 @@
 .DS_Store
 .worktrees/
+.workbuddy/
+.pytest_cache/
+.ruff_cache/
 tmp/
 *.pdf
+*.zip
 __pycache__/
 *.py[cod]
+.env
+.env.*
+!.env.example
 .gongkao-study/
 .gongkao-init-*.sqlite3
